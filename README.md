@@ -25,25 +25,38 @@ El proyecto fue íntegramente desarrollado en **R**, empleando un enfoque modern
 
 El ciclo de vida del proyecto siguió el estándar de la industria para ciencia de datos (CRISP-DM adaptado):
 
-1. **Limpieza y Prevención de Data Leakage**: Se eliminaron variables derivadas directamente del precio final y atributos identificadores sin valor predictivo para asegurar la integridad de la evaluación.
-2. **Análisis Exploratorio (EDA)**: Análisis de valores faltantes, distribuciones (ej. asimetría en precios), y correlaciones bivariadas.
-3. **Feature Engineering**: 
-   - Extracción de componentes temporales (día de la semana, feriados).
-   - Cálculo de distancias a puntos de interés turístico (Copacabana, Ipanema, Cristo Redentor).
-4. **Modelado Baseline**: Implementación de un modelo de Regresión Lineal Simple para establecer un piso de rendimiento base.
-5. **Modelado Avanzado**: Entrenamiento de un Ensamble de Árboles (*Random Forest* con 200 estimadores) empleando partición estratificada (80/20 train/test) para capturar no-linealidades complejas.
+1. **Integración de Datos**: Unión de tres fuentes: historial de búsquedas (`searches`), atributos del hotel con amenities en formato OHE (`datos_hoteles_austral`) y catálogo de comodidades como referencia (`amenities_descriptions`).
+2. **Limpieza y Prevención de Data Leakage**: Se eliminaron variables derivadas directamente del precio final y atributos identificadores sin valor predictivo para asegurar la integridad de la evaluación.
+3. **Análisis Exploratorio (EDA)**: Análisis de valores faltantes, distribuciones (ej. asimetría en precios), correlaciones bivariadas y comportamiento de compra por posición.
+4. **Feature Engineering**: 
+   - Extracción de componentes temporales (día de la semana, día del año, feriados brasileños).
+   - Cálculo de distancias geoespaciales a puntos de interés turístico (Copacabana, Ipanema, Cristo Redentor) usando la fórmula de Haversine.
+   - Features de popularidad del hotel (n° búsquedas, tasa de compra histórica).
+   - Dummies de amenities desde columnas OHE reales del dataset de hoteles (parking, spa, pileta, internet, desayuno).
+5. **Modelado Baseline**: Implementación de un modelo de Regresión Lineal Simple para establecer un piso de rendimiento base.
+6. **Modelado Avanzado**: Entrenamiento de un Ensamble de Árboles (*Random Forest* con 200 estimadores) empleando partición estratificada (80/20 train/test) para capturar no-linealidades complejas.
 
 ## 📊 Resultados Clave
 
 El modelo Random Forest superó significativamente la línea base lineal, demostrando la naturaleza altamente no lineal de la fijación de precios hoteleros.
 
 *Métricas sobre el conjunto de prueba (Test Set):*
-- **RMSE (Root Mean Squared Error):** $ 27.81
-- **MAE (Mean Absolute Error):** $ 20.11
-- **R² (Varianza explicada):** 0.5059 (50.6%)
 
-**Importancia de Variables (Feature Importance):**
-> *A través de la reducción de impureza, el modelo reveló de forma unívoca que las clasificaciones de estatus del hotel (`starRating` y `avgRating`) junto con la ubicación geográfica (distancia a Copacabana) son los estimadores principales del precio. En consecuencia, el excedente del consumidor turístico se canaliza fuertemente hacia atributos posicionales y jerárquicos, relegando las comodidades accesorias (amenities) a un impacto meramente marginal.*
+| Modelo | RMSE | MAE | R² |
+|---|---|---|---|
+| Baseline lineal (`avgRating`) | $37.51 | $27.88 | 0.1008 (10.1%) |
+| **Random Forest (200 árboles)** | **$29.30** | **$21.36** | **0.4513 (45.1%)** |
+
+**Importancia de Variables (Feature Importance — Top 5):**
+> *El modelo reveló que los factores temporales y de comportamiento de búsqueda dominan la predicción de precios: la **anticipación de la reserva** (`anticipation`) es el predictor más potente, seguido por el **día del año** (`dia_del_anio`) como proxy de estacionalidad. Entre los atributos del hotel, la **valoración de ubicación** (`avgRatingLocation`) y el **nivel de servicio** (`avgService`, `avgRating`) emergen como los estimadores más relevantes. Esto sugiere que el precio hotelero en Río de Janeiro está fuertemente determinado por cuándo se busca y la calidad percibida del servicio, más que por las comodidades físicas del hotel.*
+
+| Ranking | Variable | Descripción |
+|---|---|---|
+| 1 | `anticipation` | Días de anticipación de la búsqueda |
+| 2 | `dia_del_anio` | Día del año (captura estacionalidad) |
+| 3 | `avgRatingLocation` | Rating de ubicación del hotel |
+| 4 | `avgService` | Rating de servicio general |
+| 5 | `avgRating` | Rating promedio del hotel |
 
 ## 📂 Estructura del Repositorio
 
@@ -54,7 +67,6 @@ El proyecto sigue una arquitectura estándar orientada a la reproducibilidad:
 │   ├── raw/               # Datos originales 
 │   └── processed/         # Datos limpios y procesados 
 ├── scripts/               # Scripts R auxiliares (funciones custom)
-├── notebooks/             # Archivos Markdown con el análisis completo
 ├── output/
 │   ├── figures/           # Gráficos generados (.pdf)
 │   └── reports/           # Documentos finales renderizados (.pdf)
@@ -73,4 +85,4 @@ Para reproducir este análisis en tu entorno local:
    ```
 2. **Entorno**: Abre el archivo `ProyectoHotelero.Rproj` en RStudio para configurar automáticamente el directorio de trabajo.
 3. **Dependencias**: Ejecuta el script `scripts/install_dependencies.R` para asegurar que tienes todas las librerías necesarias.
-4. **Ejecución**: Abre el archivo `notebooks/prediccion_precios.Rmd` y ejecuta los bloques secuencialmente, o utiliza el comando `Knit` (Render) para generar el reporte completo.
+4. **Ejecución del Código**: Abre y ejecuta el script `scripts/run_model.R`. Este archivo contiene el pipeline completo: desde la carga y limpieza de datos hasta el entrenamiento del modelo Random Forest y la exportación de las figuras a la carpeta `output/figures/`.

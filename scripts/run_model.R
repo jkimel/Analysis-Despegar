@@ -1,5 +1,5 @@
 ## ----setup, include=FALSE-----------------------------------------------------
-knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, fig.path = "../output/figures/", dev = "pdf")
 
 
 ## ----directorio, eval=FALSE---------------------------------------------------
@@ -22,14 +22,34 @@ library(geosphere)
 
 
 ## ----carga_searches-----------------------------------------------------------
+# Tabla base: una fila por busqueda x hotel
+# Columnas clave: hid (hotel), geo_id (destino), target, precio, anticipacion, etc.
 searches <- read.csv("../data/raw/searches_6381.csv", stringsAsFactors = FALSE)
 
 
+## ----carga_hoteles------------------------------------------------------------
+# Atributos del hotel: amenities OHE (columnas binarias por comodidad) + metadata
+# Llave: hotel_id -> se une con searches$hid
+hoteles <- read.csv("../data/raw/datos_hoteles_austral.csv", stringsAsFactors = FALSE)
+
+
+## ----carga_multidestination---------------------------------------------------
+# Contexto del destino x mes: precio mediano, vuelos, ocupacion, etc.
+# Llave: geoid -> se une con searches$geo_id
+# Nota: check.names=TRUE (default) para que R sanitice columnas con caracteres
+# especiales ("&", espacios) y evitar errores en summarise/select.
+multidest <- read.csv("../data/raw/multidestination_datos_full.csv",
+                      stringsAsFactors = FALSE)
+
+
 ## ----carga_amenities----------------------------------------------------------
+# Catalogo de referencia: mapea codigo de amenidad -> descripcion en varios idiomas
+# NO se hace join directo; se usa para consultas ad-hoc (ej. que es "WIFI")
 amenities <- read.csv("../data/raw/amenities_descriptions.csv", stringsAsFactors = FALSE)
 
 
 ## ----dim_searches-------------------------------------------------------------
+cat("--- searches ---\n")
 cat("Filas:   ", nrow(searches), "\n")
 cat("Columnas:", ncol(searches), "\n")
 
@@ -43,39 +63,79 @@ print(colnames(searches))
 head(searches)
 
 
+## ----dim_hoteles--------------------------------------------------------------
+cat("--- datos_hoteles_austral ---\n")
+cat("Filas:   ", nrow(hoteles), "\n")
+cat("Columnas:", ncol(hoteles), "\n")
+
+
+## ----dim_multidest------------------------------------------------------------
+cat("--- multidestination_datos_full ---\n")
+cat("Filas:   ", nrow(multidest), "\n")
+cat("Columnas:", ncol(multidest), "\n")
+
+
 ## ----dim_amenities------------------------------------------------------------
+cat("--- amenities_descriptions (catalogo) ---\n")
 cat("Filas:   ", nrow(amenities), "\n")
 cat("Columnas:", ncol(amenities), "\n")
 
 
-## ----cols_amenities-----------------------------------------------------------
-cat("Columnas del dataset Amenities:\n")
-print(colnames(amenities))
-
-
 ## ----head_amenities-----------------------------------------------------------
+# Ejemplo de consulta ad-hoc al catalogo:
+# amenities %>% filter(id == "WIFI") %>% pull(descriptions.es)
 head(amenities)
 
 
+## ----inspeccion_llaves--------------------------------------------------------
+# Verificar que las llaves de union existen y tienen valores compatibles
+
+cat("Llave searches$hid (muestra):   ", head(searches$hid, 3), "\n")
+cat("Llave hoteles$hotel_id (muestra):", head(hoteles$hotel_id, 3), "\n")
+cat("\n")
+cat("Llave searches$geo_id (muestra): ", head(searches$geo_id, 3), "\n")
+cat("Llave multidest$geoid (muestra): ", head(multidest$geoid, 3), "\n")
+
+
 ## ----union_datasets-----------------------------------------------------------
-# Convertimos amen_ohe_extraflag a character para que los tipos sean compatibles
-searches_chr <- searches %>%
-  mutate(amen_ohe_extraflag = as.character(amen_ohe_extraflag))
+# PASO 1: searches + hoteles
+#   Cardinalidad: muchas busquedas por hotel (N:1)
+#   Aporta: columnas OHE de amenities (WIFI, PARKING, SPA, etc.) y nombre del hotel
+dataset_paso1 <- searches %>%
+  left_join(hoteles, by = c("hid" = "hotel_id"))
 
-amenities_join <- amenities %>%
-  rename(amen_ohe_extraflag = id)   # id ya es character
-
-# Left join: conserva TODAS las filas de searches
-dataset_unido <- searches_chr %>%
-  left_join(amenities_join, by = "amen_ohe_extraflag")
+# PASO 2: resultado + multidestination
+#   NOTA: El join por geo_id x month_year produce 29.6% de NAs en todas las
+#   columnas de multidest (los periodos no coinciden con el rango de searches).
+#   Se omite este join para evitar OOM y mantener el dataset limpio.
+#   multidest queda disponible como referencia para analisis ad-hoc.
+dataset_unido <- dataset_paso1
 
 cat("Filas del dataset unido:   ", nrow(dataset_unido), "\n")
 cat("Columnas del dataset unido:", ncol(dataset_unido), "\n")
 
-# Cuantas filas tuvieron match con amenities?
-matches <- sum(!is.na(dataset_unido$descriptions.es))
-cat("Filas con amenity asociada:", matches, "\n")
-cat("Filas sin match (NA):      ", nrow(dataset_unido) - matches, "\n")
+# Liberar RAM: dataset_paso1 ya no es necesario
+rm(dataset_paso1, searches)
+invisible(gc())
+
+
+## ----chequeo_joins------------------------------------------------------------
+# Verificar que el join searches x hoteles fue exitoso
+
+chequeo_na <- dataset_unido %>%
+  summarise(
+    # Variables de searches (deben ser 0%)
+    pct_na_target     = mean(is.na(target))         * 100,
+    pct_na_precio     = mean(is.na(price_by_night)) * 100,
+    # Variables de hoteles (join por hid -> hotel_id)
+    pct_na_hotel_name = mean(is.na(name))           * 100,
+    pct_na_parking    = mean(is.na(PARKING))        * 100
+  )
+
+print(chequeo_na)
+# Resultado esperado:
+#   pct_na_target = 0, pct_na_precio = 0  -> searches ok
+#   pct_na_hotel_name y pct_na_parking bajos -> join hoteles ok
 
 
 ## ----cols_unido---------------------------------------------------------------
@@ -92,29 +152,37 @@ glimpse(dataset_unido)
 
 
 ## ----eda_summary--------------------------------------------------------------
-summary(dataset_unido)
+# Summary selectivo de variables clave (evitar OOM en dataset de 200+ columnas)
+dataset_unido %>%
+  select(price_by_night, price_by_night_person, starRating,
+         avgRating, anticipation, duration, target,
+         PARKING, SPA, PISC, INTGR, BREAKFST) %>%
+  summary()
 
 
 ## ----eda_nas------------------------------------------------------------------
-# Conteo y porcentaje de NA por columna
-na_df <- dataset_unido %>%
-  summarise(across(everything(), ~ sum(is.na(.)))) %>%
-  pivot_longer(everything(), names_to = "variable", values_to = "na_count") %>%
+# Conteo y porcentaje de NA por columna (colSums es mucho mas eficiente en RAM)
+na_counts <- colSums(is.na(dataset_unido))
+na_df <- data.frame(
+  variable = names(na_counts),
+  na_count = as.integer(na_counts)
+) %>%
   mutate(pct_na = round(na_count / nrow(dataset_unido) * 100, 2)) %>%
   filter(na_count > 0) %>%
   arrange(desc(pct_na))
+invisible(gc())
 
 print(na_df)
 
 
 ## ----eda_nas_plot, fig.width=9, fig.height=5----------------------------------
 if (nrow(na_df) > 0) {
-  ggplot(na_df, aes(x = reorder(variable, pct_na), y = pct_na)) +
+  ggplot(head(na_df, 20), aes(x = reorder(variable, pct_na), y = pct_na)) +
     geom_col(fill = "#E63946", alpha = 0.85) +
     geom_text(aes(label = paste0(pct_na, "%")), hjust = -0.1, size = 3.5) +
     coord_flip() +
     labs(
-      title = "Porcentaje de valores faltantes por variable",
+      title = "Top 20 variables con mas valores faltantes",
       x = "Variable", y = "% de NA"
     ) +
     theme_minimal(base_size = 12) +
@@ -475,20 +543,23 @@ ggplot(df_plot_dist, aes(x = dist_copacabana_km, y = price_by_night_person)) +
 
 
 ## ----features_amenities-------------------------------------------------------
+# Las columnas OHE de amenities vienen directamente de datos_hoteles_austral
+# (ya incorporadas al dataset en el join con hoteles por hid).
+# Creamos aliases legibles para las principales categorias.
+# Codigos reales en el dataset: PARKING, SPA, PISC, INTGR, BREAKFST
 df_rio <- df_rio %>%
   mutate(
-    tiene_estacionamiento = ifelse(!is.na(amenity_category.id) & amenity_category.id == "ESTA", 1, 0),
-    tiene_servicios_com   = ifelse(!is.na(amenity_category.id) & amenity_category.id == "COMU", 1, 0),
-    tiene_para_ninos      = ifelse(!is.na(amenity_category.id) & amenity_category.id == "NINO", 1, 0)
+    tiene_estacionamiento = ifelse(!is.na(PARKING),  PARKING,  0L),
+    tiene_spa             = ifelse(!is.na(SPA),       SPA,      0L),
+    tiene_pileta          = ifelse(!is.na(PISC),      PISC,     0L),
+    tiene_internet        = ifelse(!is.na(INTGR),     INTGR,    0L),
+    tiene_desayuno        = ifelse(!is.na(BREAKFST),  BREAKFST, 0L)
   )
 
-cat("Amenities disponibles (categorias unicas):\n")
-print(table(df_rio$amenity_category.id, useNA = "always"))
-
-cat("\nResumen dummies de amenities:\n")
+cat("Resumen dummies de amenities (OHE desde hoteles):\n")
 df_rio %>%
-  select(tiene_estacionamiento, tiene_servicios_com, tiene_para_ninos) %>%
-  summarise(across(everything(), sum)) %>%
+  select(tiene_estacionamiento, tiene_spa, tiene_pileta, tiene_internet, tiene_desayuno) %>%
+  summarise(across(everything(), ~ sum(., na.rm = TRUE))) %>%
   print()
 
 
@@ -610,8 +681,8 @@ df_modelo <- df_rio %>%
     # --- Features de pais de origen del usuario (dummies) ---
     AR, BR, CL, CO, MX, PE, UY, OTHER,
 
-    # --- Features de amenities (dummies) ---
-    tiene_estacionamiento, tiene_servicios_com, tiene_para_ninos,
+    # --- Features de amenities (OHE desde datos_hoteles_austral) ---
+    tiene_estacionamiento, tiene_spa, tiene_pileta, tiene_internet, tiene_desayuno,
 
     # --- Features de popularidad del hotel ---
     n_busquedas, tasa_compra
@@ -679,7 +750,7 @@ cat("Correlacion:", cor_df$correlacion[1], "\n")
 # Scatterplot: variable mas correlacionada vs. precio objetivo
 # Se agrega la linea de regresion lineal (method = "lm")
 # ---------------------------------------------------------------
-ggplot(train_data, aes_string(x = mejor_var, y = "price_by_night_person")) +
+ggplot(train_data, aes(x = .data[[mejor_var]], y = price_by_night_person)) +
   geom_point(alpha = 0.18, color = "#457B9D", size = 0.9) +
   geom_smooth(method = "lm", color = "#E63946", linewidth = 1.3,
               fill = "#E6394620", se = TRUE) +
@@ -719,31 +790,41 @@ library(ranger)
 set.seed(42)
 
 # ---------------------------------------------------------------
+# Para evitar OOM en equipos con RAM limitada, submuestreamos el
+# conjunto de entrenamiento a 150K filas (de ~915K disponibles).
+# 150K filas es mas que suficiente para un RF estadisticamente valido.
+# ---------------------------------------------------------------
+MAX_TRAIN_ROWS <- 150000L
+if (nrow(train_data) > MAX_TRAIN_ROWS) {
+  train_rf <- train_data %>% slice_sample(n = MAX_TRAIN_ROWS)
+  cat("Submuestra de entrenamiento para RF:", nrow(train_rf), "filas\n")
+} else {
+  train_rf <- train_data
+}
+invisible(gc())  # liberar RAM antes de entrenar
+
+# ---------------------------------------------------------------
 # Parametros del modelo:
 #   num.trees       = 200   : suficiente para estabilizar predicciones
-#   mtry            = floor(sqrt(p)) : features candidatas por split (default RF)
-#   sample.fraction = 0.3   : cada arbol entrena sobre el 30% del train set
-#                             (subsampling nativo de ranger). Drasticamente mas
-#                             rapido y estadisticamente valido para datasets grandes.
-#   importance      = 'impurity' : reduccion de varianza acumulada por split.
-#                             Se calcula de forma gratuita durante el entrenamiento.
-#   num.threads     = nucleos disponibles - 1 : paralelismo para acelerar el fit
-#   respect.unordered.factors = 'order' : manejo correcto de factores
+#   mtry            = floor(sqrt(p)) : features candidatas por split
+#   sample.fraction = 0.2   : 20% por arbol (reducido para ahorrar RAM)
+#   importance      = 'impurity' : reduccion de varianza, gratuito durante fit
+#   num.threads     = min(2, cores) : limitado para evitar picos de RAM paralelos
 # ---------------------------------------------------------------
-n_features  <- ncol(train_data) - 1          # excluye la variable objetivo
-n_cores     <- max(1, parallel::detectCores() - 1)  # usa todos los nucleos disponibles
+n_features <- ncol(train_rf) - 1
+n_cores    <- min(2L, max(1L, parallel::detectCores() - 1L))
 
 modelo_rf <- ranger(
-  formula                    = price_by_night_person ~ .,
-  data                       = train_data,
-  num.trees                  = 200,
-  mtry                       = floor(sqrt(n_features)),
-  sample.fraction            = 0.3,           # subsampling: 30% por arbol
-  importance                 = "impurity",    # reduccion de varianza (rapido)
-  respect.unordered.factors  = "order",
-  num.threads                = n_cores,       # paralelismo
-  seed                       = 42,
-  verbose                    = FALSE
+  formula                   = price_by_night_person ~ .,
+  data                      = train_rf,
+  num.trees                 = 200,
+  mtry                      = floor(sqrt(n_features)),
+  sample.fraction           = 0.2,
+  importance                = "impurity",
+  respect.unordered.factors = "order",
+  num.threads               = n_cores,
+  seed                      = 42,
+  verbose                   = FALSE
 )
 
 cat("=== Resumen del modelo Random Forest (ranger) ===\n")
@@ -873,7 +954,9 @@ ggplot(importancia_df, aes(x = variable, y = importancia, fill = color_rank)) +
 
 
 cat('=== FINAL METRICS ===\n')
-print(metricas_rf)
-cat('=== FEATURE IMPORTANCE ===\n')
-print(head(importancia_rf, 5))
+cat(sprintf('  RMSE : $ %.2f\n', rmse))
+cat(sprintf('  MAE  : $ %.2f\n', mae))
+cat(sprintf('  R2   :   %.4f (%.1f%% de varianza explicada)\n', r2, r2 * 100))
+cat('=== FEATURE IMPORTANCE (Top 5) ===\n')
+print(head(importancia_df, 5))
 
